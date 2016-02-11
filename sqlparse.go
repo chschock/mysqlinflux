@@ -7,10 +7,7 @@ import (
     "errors"
     "reflect"
     "strings"
-    // "regexp"
     "bufio"
-    "io"
-    "log"
     "os"
     "github.com/xwb1989/sqlparser"
     "github.com/influxdb/influxdb/client/v2"
@@ -20,35 +17,14 @@ const (
     MyDB = "y"
     username = ""
     password = ""
+
+    debug = false
 )
 
 type ExtractType map[string]map[string]string
 
-func main2() {
-    nBytes, nChunks := int64(0), int64(0)
-    r := bufio.NewReader(os.Stdin)
-    buf := make([]byte, 0, 4*1024)
-    for {
-        n, err := r.Read(buf[:cap(buf)])
-        buf = buf[:n]
-        if n == 0 {
-            if err == nil {
-                continue
-            }
-            if err == io.EOF {
-                break
-            }
-            log.Fatal(err)
-        }
-        nChunks++
-        nBytes += int64(len(buf))
-        // process buf
-        if err != nil && err != io.EOF {
-            log.Fatal(err)
-        }
-    }
-    log.Println("Bytes:", nBytes, "Chunks:", nChunks)
-}
+
+
 
 func insertSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
 
@@ -72,7 +48,6 @@ func insertSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err er
 }
 
 func main() {
-
 
     extract := ExtractType{
         "data": {
@@ -99,48 +74,38 @@ func main() {
         Database:  MyDB,
         Precision: "s",
     }
-    bp, _ := client.NewBatchPoints(bp_config)
-
-    // regex := regexp.MustCompile("into")
-    // sql := "insert into data (col1, col2) values ('mytag',1.4142)"
-    // var _ = strings.NewReader(sql)
-    // fmt.Printf("found at pos %v\n", regex.FindReaderIndex(scanner))
-    // err := analyzeInsert(sql, extract, bp)
 
     scanner := bufio.NewScanner(bufio.NewReader(os.Stdin))
     scanner.Split(insertSplitFunc)
 
     insert_cnt := 0
-    for scanner.Scan() {
-        insert_cnt ++
-        e := strings.Index(scanner.Text(),"/*!*/;")
-
-        if e > 0 {
-            sqlInsert := scanner.Text()[:e]
-            err := analyzeInsert(sqlInsert, extract, bp)
-            // fmt.Printf("-> %100s\n", sqlInsert)
-            if err != nil {
-                fmt.Println(err)
+    for bp_cnt := 1; bp_cnt > 0; {
+        bp, _ := client.NewBatchPoints(bp_config)
+        for bp_cnt = 0; scanner.Scan() && bp_cnt < 1000; {
+            insert_cnt ++
+            e := strings.Index(scanner.Text(),"/*!*/;")
+            if e > 0 {
+                sqlInsert := scanner.Text()[:e]
+                err := analyzeInsert(sqlInsert, extract, bp)
+                if err != nil {
+                    fmt.Println(err)
+                } else {
+                    bp_cnt ++
+                }
             }
         }
-        if (insert_cnt % 1000 == 0) {
+        if bp_cnt > 0 {
             err := c.Write(bp)
             if err != nil {
                 fmt.Println(err)
                 return
             }
             fmt.Printf("%+v\n", bp.Points()[0])
-            bp, _ = client.NewBatchPoints(bp_config)
         }
     }
 
-    c.Write(bp)
-
 }
 
-const(
-    debug = false
-)
 
 func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error {
     // parse SQL string
@@ -229,42 +194,3 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
 
     return nil
 }
-
-func test() {
-    var sql string
-    sql = "insert into data (col1, col2) values ('asdaf123a','1a\\\nmsd,2,3,4')"
-    // sql = "INSERT INTO t3 VALUES (8, 10, 'baz')"
-    pt, err := sqlparser.Parse(sql)
-    fmt.Printf("%v  [%v]\n", sql, err)
-
-    fmt.Printf("%v\n", sqlparser.String(pt))
-
-    fmt.Printf("%#v\n%s\n", pt, reflect.TypeOf(pt))
-    // var t interface{}
-
-    fmt.Println("type switching")
-    t := pt
-    switch t := t.(type) {
-    default:
-        fmt.Printf("stupid: %v\n", reflect.TypeOf(t))
-    case *sqlparser.Insert:
-        fmt.Printf("nice: \n%+v\n%s\n\n", t, t.Table.Name)
-        for i, c := range t.Columns {
-            fmt.Printf("%d: %s %s\n", i, sqlparser.String(c), reflect.TypeOf(c))
-        }
-        fmt.Printf("%#v\n", t.Rows)
-        rows, ok := t.Rows.(sqlparser.Values)
-        fmt.Printf("ok: %t, %#v\n", ok, rows)
-        for i, r := range rows {
-            fmt.Printf("row %d: \n", i)
-            vt, _ := r.(sqlparser.ValTuple)
-            for _, v := range vt {
-                ve, _ := v.(sqlparser.StrVal)
-                fmt.Printf("%s  [%#v]\n", string(ve), v)
-            }
-            fmt.Println()
-        }
-    }
-
-}
-

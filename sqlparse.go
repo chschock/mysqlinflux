@@ -19,26 +19,21 @@ const (
     password = ""
 
     debug = false
+    LINE_TAIL = "/*!*/;\n"
+    LINE_HEAD = "INSERT"
 )
 
 type ExtractType map[string]map[string]string
 
-
-
-
 func insertSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
-
     // Return nothing if at end of file and no data passed
     if atEOF && len(data) == 0 {
         return 0, nil, nil
     }
-
-    // Find the index of the input of a newline followed by a
-    // pound sign.
-    if i := strings.Index(string(data), "/*!*/;\nINSERT"); i >= 0 {
+    // Find a INSERT statement
+    if i := strings.Index(string(data), LINE_TAIL + LINE_HEAD); i >= 0 {
         return i + 7, data[0:i], nil
     }
-
     // If at end of file with data return the data
     if atEOF {
         return len(data), data, nil
@@ -60,6 +55,11 @@ func main() {
             "fields": "coherent_si_value",
             "time": "time_stamp",
         },
+        "logs": {
+            "tags": "thread",
+            "fields": "log_level",
+            "time": "log_date",
+        },
     }
 
     c, _ := client.NewHTTPClient(client.HTTPConfig{
@@ -72,7 +72,7 @@ func main() {
     // Create a new point batch
     bp_config := client.BatchPointsConfig{
         Database:  MyDB,
-        Precision: "s",
+        Precision: "ms",
     }
 
     scanner := bufio.NewScanner(bufio.NewReader(os.Stdin))
@@ -81,16 +81,18 @@ func main() {
     insert_cnt := 0
     for bp_cnt := 1; bp_cnt > 0; {
         bp, _ := client.NewBatchPoints(bp_config)
-        for bp_cnt = 0; scanner.Scan() && bp_cnt < 1000; {
-            insert_cnt ++
-            e := strings.Index(scanner.Text(),"/*!*/;")
-            if e > 0 {
+        for bp_cnt = 0; scanner.Scan() && bp_cnt < 100000; {
+            if  strings.Index(scanner.Text(), LINE_HEAD) != 0 {
+                continue // there is no INSERT at the start of the file
+            }
+            if e := strings.Index(scanner.Text(), LINE_TAIL);  e > 0 {
                 sqlInsert := scanner.Text()[:e]
                 err := analyzeInsert(sqlInsert, extract, bp)
                 if err != nil {
-                    fmt.Println(err)
+                    fmt.Printf("analyzeInsert failed for line \n%s\n%s\n", sqlInsert, err)
                 } else {
-                    bp_cnt ++
+                    insert_cnt ++
+                    bp_cnt += len(bp.Points())
                 }
             }
         }
@@ -100,7 +102,7 @@ func main() {
                 fmt.Println(err)
                 return
             }
-            fmt.Printf("%+v\n", bp.Points()[0])
+            // fmt.Printf("%+v\n", bp.Points()[0])
         }
     }
 
@@ -155,7 +157,8 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
                     if(debug) {fmt.Println("time")}
                     ve, ok := v.(sqlparser.StrVal)
                     if ok {
-                        timestamp, _ = time.Parse(time.RFC3339, string(ve)+"Z")
+                        timestamp, _ = time.Parse(
+                            time.RFC3339, strings.Replace(string(ve)+"Z", " ", "T", 1))
                     } else {
                         fmt.Println("Time column is no StrVal")
                     }
@@ -163,32 +166,36 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
                     ve, ok := v.(sqlparser.StrVal)
                     if(debug) {fmt.Printf("tags: %s, %t\n", ve, ok)}
                     if ok {
-                        tags[cols[i]] = string(ve)
+                        tags["tag_" + cols[i]] = string(ve)
                     } else {
                         fmt.Println("Tag column is no StrVal")
                     }
                 } else if cols[i] == extract[table]["fields"] {
-                    ve, ok := v.(sqlparser.NumVal)
-                    if(debug) {fmt.Printf("field: %s, %t\n", ve, ok)}
-                    if ok {
-                        val, err := strconv.ParseFloat(string(ve), 64)
+                    switch v := v.(type) {
+                    case sqlparser.NumVal:
+                        // if(debug) {fmt.Printf("field: %s, %t\n", ve, ok)}
+                        val, err := strconv.ParseFloat(string(v), 64)
                         if(debug) {fmt.Printf("ParseFloat %4.2f\n", val)}
                         if err != nil {
                             fmt.Println("Field column doesn't convert to float")
                         } else {
                             fields[cols[i]] = val
                         }
-                    } else {
-                        fmt.Println("Field column is no StrVal")
+                    case sqlparser.StrVal:
+                        // if(debug) {fmt.Printf("tags: %s, %t\n", ve, ok)}
+                        fields[cols[i]] = string(v)
                     }
+
                 }
             }
             if(debug) {fmt.Println("NewPoint")}
-            p, err := client.NewPoint(table, tags, fields, timestamp)
-            if err != nil {
-                return err
+            if ! timestamp.IsZero() && len(fields) > 0 {
+                p, err := client.NewPoint(table, tags, fields, timestamp)
+                if err != nil {
+                    return err
+                }
+                bp.AddPoint(p)
             }
-            bp.AddPoint(p)
         }
     }
 

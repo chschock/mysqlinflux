@@ -54,24 +54,6 @@ func insertSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err er
     return
 }
 
-func data_def() ExtractType {
-    var d = ExtractType{
-        "datapoint": {
-            Tags: map[string]string{"name": ""},
-            Fields: map[string]string{"coherent_si_value": "float",},
-            Time: "time_stamp",
-        },
-        "logs": {
-            Tags: map[string]string{"thread": ""},
-            Fields: map[string]string{"log_level": "string",},
-            Time: "log_date",
-        },
-    }
-
-    json.Marshal(d)
-    return d
-}
-
 func main() {
     dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
     file, _ := os.Open(filepath.Join(dir, "conf.json"))
@@ -179,7 +161,7 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
                     if(debug) {fmt.Println("time")}
                     ve, ok := v.(sqlparser.StrVal)
                     if ok {
-                        timestamp, _ = time.Parse(
+                        timestamp, _ = time.Parse( // place T as date time seperator and add UTC Z
                             time.RFC3339, strings.Replace(string(ve)+"Z", " ", "T", 1))
                     } else {
                         fmt.Println("Time column is no StrVal")

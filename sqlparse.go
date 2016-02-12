@@ -9,21 +9,33 @@ import (
     "strings"
     "bufio"
     "os"
+    "path/filepath"
+    "encoding/json"
     "github.com/xwb1989/sqlparser"
     "github.com/influxdb/influxdb/client/v2"
 )
 
 const (
-    MyDB = "y"
-    username = ""
-    password = ""
-
-    debug = false
     LINE_TAIL = "/*!*/;\n"
     LINE_HEAD = "INSERT"
+    debug = false
 )
 
-type ExtractType map[string]map[string]string
+type ExtractType map[string]struct{
+    Tags map[string]string
+    Fields map[string]string
+    Time string
+}
+
+type ConfigType struct{
+    Address string
+    Database string
+    Username string
+    Password string
+    Precision string
+    Debug bool
+    Extract ExtractType
+}
 
 func insertSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error) {
     // Return nothing if at end of file and no data passed
@@ -42,37 +54,46 @@ func insertSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err er
     return
 }
 
-func main() {
-
-    extract := ExtractType{
-        "data": {
-            "tags": "col1",
-            "fields": "col2",
-            "time": "timecol",
-        },
+func data_def() ExtractType {
+    var d = ExtractType{
         "datapoint": {
-            "tags": "name",
-            "fields": "coherent_si_value",
-            "time": "time_stamp",
+            Tags: map[string]string{"name": ""},
+            Fields: map[string]string{"coherent_si_value": "float",},
+            Time: "time_stamp",
         },
         "logs": {
-            "tags": "thread",
-            "fields": "log_level",
-            "time": "log_date",
+            Tags: map[string]string{"thread": ""},
+            Fields: map[string]string{"log_level": "string",},
+            Time: "log_date",
         },
     }
 
-    c, _ := client.NewHTTPClient(client.HTTPConfig{
-        Addr: "http://localhost:8086",
-        Username: username,
-        Password: password,
-    })
+    json.Marshal(d)
+    return d
+}
 
+func main() {
+    dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
+    file, _ := os.Open(filepath.Join(dir, "conf.json"))
+    decoder := json.NewDecoder(file)
+    config := ConfigType{}
+
+    if err := decoder.Decode(&config); err != nil {
+      fmt.Println("error decoding config: ", err)
+    } else {
+        fmt.Printf("Config: %+v\n", config)
+    }
+
+    c, _ := client.NewHTTPClient(client.HTTPConfig{
+        Addr: config.Address,
+        Username: config.Username,
+        Password: config.Password,
+    })
 
     // Create a new point batch
     bp_config := client.BatchPointsConfig{
-        Database:  MyDB,
-        Precision: "ms",
+        Database:  config.Database,
+        Precision: config.Precision,
     }
 
     scanner := bufio.NewScanner(bufio.NewReader(os.Stdin))
@@ -87,7 +108,7 @@ func main() {
             }
             if e := strings.Index(scanner.Text(), LINE_TAIL);  e > 0 {
                 sqlInsert := scanner.Text()[:e]
-                err := analyzeInsert(sqlInsert, extract, bp)
+                err := analyzeInsert(sqlInsert, config.Extract, bp)
                 if err != nil {
                     fmt.Printf("analyzeInsert failed for line \n%s\n%s\n", sqlInsert, err)
                 } else {
@@ -153,7 +174,8 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
             if(debug) {fmt.Printf("hallo\n")}
 
             for i, v := range row {
-                if cols[i] == extract[table]["time"] {
+
+                if cols[i] == extract[table].Time {
                     if(debug) {fmt.Println("time")}
                     ve, ok := v.(sqlparser.StrVal)
                     if ok {
@@ -162,7 +184,7 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
                     } else {
                         fmt.Println("Time column is no StrVal")
                     }
-                } else if cols[i] == extract[table]["tags"] {
+                } else if _, present := extract[table].Tags[cols[i]]; present {
                     ve, ok := v.(sqlparser.StrVal)
                     if(debug) {fmt.Printf("tags: %s, %t\n", ve, ok)}
                     if ok {
@@ -170,7 +192,7 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
                     } else {
                         fmt.Println("Tag column is no StrVal")
                     }
-                } else if cols[i] == extract[table]["fields"] {
+                } else if _, present := extract[table].Fields[cols[i]]; present {
                     switch v := v.(type) {
                     case sqlparser.NumVal:
                         // if(debug) {fmt.Printf("field: %s, %t\n", ve, ok)}
@@ -185,7 +207,6 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
                         // if(debug) {fmt.Printf("tags: %s, %t\n", ve, ok)}
                         fields[cols[i]] = string(v)
                     }
-
                 }
             }
             if(debug) {fmt.Println("NewPoint")}

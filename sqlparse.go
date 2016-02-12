@@ -6,6 +6,7 @@ import (
     "errors"
     "reflect"
     "strings"
+    "bytes"
     "bufio"
     "os"
     "path/filepath"
@@ -13,12 +14,15 @@ import (
     "github.com/xwb1989/sqlparser"
     "github.com/influxdb/influxdb/client/v2"
     log "github.com/Sirupsen/logrus"
+    "github.com/davecheney/profile"
 )
 
+var LINE_TAIL = []byte("/*!*/;\n")
+var LINE_HEAD = []byte("INSERT")
+var LINE_SEP = bytes.Join([][]byte{ LINE_TAIL, LINE_HEAD }, []byte{})
+
 const (
-    LINE_TAIL = "/*!*/;\n"
-    LINE_HEAD = "INSERT"
-    debug = false
+    gen_profile_data = false
 )
 
 type ExtractType map[string]struct{
@@ -43,18 +47,21 @@ func insertSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err er
         return 0, nil, nil
     }
     // Find a INSERT statement
-    if i := strings.Index(string(data), LINE_TAIL + LINE_HEAD); i >= 0 {
+    if i := bytes.Index(data, LINE_SEP); i >= 0 {
         return i + 7, data[0:i], nil
     }
     // If at end of file with data return the data
     if atEOF {
         return len(data), data, nil
     }
-
     return
 }
 
 func main() {
+    if gen_profile_data {
+        defer profile.Start(profile.CPUProfile).Stop()
+    }
+
     dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
     file, _ := os.Open(filepath.Join(dir, "conf.json"))
     decoder := json.NewDecoder(file)
@@ -63,7 +70,7 @@ func main() {
     if err := decoder.Decode(&config); err != nil {
       log.Fatalln("error decoding config: ", err)
     } else {
-        log.Info("Config: %+v\n", config)
+        log.Info("Config: %#v\n", config)
     }
 
     if config.Debug {
@@ -89,11 +96,13 @@ func main() {
     for bp_cnt := 1; bp_cnt > 0; {
         bp, _ := client.NewBatchPoints(bp_config)
         for bp_cnt = 0; scanner.Scan() && bp_cnt < 100000; {
-            if  strings.Index(scanner.Text(), LINE_HEAD) != 0 {
+            // if  strings.Index(scanner.Text(), string(LINE_HEAD)) != 0 {
+            if bytes.Compare(scanner.Bytes()[0:len(LINE_HEAD)], LINE_HEAD) != 0 {
                 continue // there is no INSERT at the start of the file
             }
-            if e := strings.Index(scanner.Text(), LINE_TAIL);  e > 0 {
-                sqlInsert := scanner.Text()[:e]
+            // if e := strings.Index(scanner.Text(), string(LINE_TAIL));  e > 0 {
+            if e := bytes.Index(scanner.Bytes(), LINE_TAIL);  e > 0 {
+                sqlInsert := string(scanner.Bytes()[:e])
                 err := analyzeInsert(sqlInsert, config.Extract, bp)
                 if err != nil {
                     log.Warn("analyzeInsert failed for line \n%s\n%s\n", sqlInsert, err)

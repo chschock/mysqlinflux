@@ -1,7 +1,6 @@
 package main
 
 import (
-    "fmt"
     "time"
     "strconv"
     "errors"
@@ -13,6 +12,7 @@ import (
     "encoding/json"
     "github.com/xwb1989/sqlparser"
     "github.com/influxdb/influxdb/client/v2"
+    log "github.com/Sirupsen/logrus"
 )
 
 const (
@@ -61,9 +61,13 @@ func main() {
     config := ConfigType{}
 
     if err := decoder.Decode(&config); err != nil {
-      fmt.Println("error decoding config: ", err)
+      log.Fatalln("error decoding config: ", err)
     } else {
-        fmt.Printf("Config: %+v\n", config)
+        log.Info("Config: %+v\n", config)
+    }
+
+    if config.Debug {
+        log.SetLevel(log.DebugLevel)
     }
 
     c, _ := client.NewHTTPClient(client.HTTPConfig{
@@ -92,7 +96,7 @@ func main() {
                 sqlInsert := scanner.Text()[:e]
                 err := analyzeInsert(sqlInsert, config.Extract, bp)
                 if err != nil {
-                    fmt.Printf("analyzeInsert failed for line \n%s\n%s\n", sqlInsert, err)
+                    log.Warn("analyzeInsert failed for line \n%s\n%s\n", sqlInsert, err)
                 } else {
                     insert_cnt ++
                     bp_cnt += len(bp.Points())
@@ -102,10 +106,10 @@ func main() {
         if bp_cnt > 0 {
             err := c.Write(bp)
             if err != nil {
-                fmt.Println(err)
+                log.Fatalln(err)
                 return
             }
-            // fmt.Printf("%+v\n", bp.Points()[0])
+            log.Debug("%+v\n", bp.Points()[0])
         }
     }
 
@@ -116,7 +120,7 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
     // parse SQL string
     t, err := sqlparser.Parse(sql)
 
-    if(debug) {fmt.Printf("%#v\n", t)}
+    log.Debug("%#v\n", t)
 
     if err != nil {
         return err
@@ -125,7 +129,7 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
     // interpret parse tree
     switch t := t.(type) {
     default:
-        fmt.Printf("Not an insert statment (%v)\n", reflect.TypeOf(t))
+        log.Warn("Not an insert statment (%v)\n", reflect.TypeOf(t))
     case *sqlparser.Insert:
         table := string(t.Table.Name)
         if _, ok := extract[table]; ! ok {
@@ -136,8 +140,8 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
         for i, c := range t.Columns {
             cols[i] = sqlparser.String(c)
         }
+        log.Debug("%#v\n", cols)
 
-        if(debug) {fmt.Printf("%#v\n", cols)}
         rows, ok := t.Rows.(sqlparser.Values)
         if ! ok {
             return errors.New("Rows are no Values")
@@ -153,45 +157,43 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
                 return errors.New("Row is no ValTuple")
             }
 
-            if(debug) {fmt.Printf("hallo\n")}
-
             for i, v := range row {
 
                 if cols[i] == extract[table].Time {
-                    if(debug) {fmt.Println("time")}
+                    log.Debug("time")
                     ve, ok := v.(sqlparser.StrVal)
                     if ok {
                         timestamp, _ = time.Parse( // place T as date time seperator and add UTC Z
                             time.RFC3339, strings.Replace(string(ve)+"Z", " ", "T", 1))
                     } else {
-                        fmt.Println("Time column is no StrVal")
+                        log.Info("Time column is no StrVal")
                     }
                 } else if _, present := extract[table].Tags[cols[i]]; present {
                     ve, ok := v.(sqlparser.StrVal)
-                    if(debug) {fmt.Printf("tags: %s, %t\n", ve, ok)}
+                    log.Debug("tags: %s, %t\n", ve, ok)
                     if ok {
                         tags["tag_" + cols[i]] = string(ve)
                     } else {
-                        fmt.Println("Tag column is no StrVal")
+                        log.Info("Tag column is no StrVal")
                     }
                 } else if _, present := extract[table].Fields[cols[i]]; present {
                     switch v := v.(type) {
                     case sqlparser.NumVal:
-                        // if(debug) {fmt.Printf("field: %s, %t\n", ve, ok)}
+                        log.Debug("field: %s, %t\n", v, ok)
                         val, err := strconv.ParseFloat(string(v), 64)
-                        if(debug) {fmt.Printf("ParseFloat %4.2f\n", val)}
+                        log.Debug("ParseFloat %4.2f\n", val)
                         if err != nil {
-                            fmt.Println("Field column doesn't convert to float")
+                            log.Info("Field column doesn't convert to float")
                         } else {
                             fields[cols[i]] = val
                         }
                     case sqlparser.StrVal:
-                        // if(debug) {fmt.Printf("tags: %s, %t\n", ve, ok)}
+                        log.Debug("tags: %s, %t\n", v, ok)
                         fields[cols[i]] = string(v)
                     }
                 }
             }
-            if(debug) {fmt.Println("NewPoint")}
+            log.Debug("NewPoint")
             if ! timestamp.IsZero() && len(fields) > 0 {
                 p, err := client.NewPoint(table, tags, fields, timestamp)
                 if err != nil {

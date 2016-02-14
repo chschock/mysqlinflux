@@ -7,6 +7,7 @@ import (
     "reflect"
     "strings"
     "bytes"
+    "regexp"
     "bufio"
     "os"
     "path/filepath"
@@ -30,12 +31,22 @@ type ExtractType map[string]struct{
     Time string
 }
 
-type ConfigType struct{
+type DbType struct{
     Address string
     Database string
     Username string
     Password string
     Precision string
+}
+
+type BinlogType struct{
+    MinTime string
+    MaxTime string
+}
+
+type ConfigType struct{
+    Db DbType
+    Binlog BinlogType
     Debug bool
     Extract ExtractType
 }
@@ -70,7 +81,7 @@ func main() {
     if err := decoder.Decode(&config); err != nil {
       log.Fatalln("error decoding config: ", err)
     } else {
-        log.Infof("Config: %#v\n", config)
+        log.Debugf("Config: %#v\n", config)
     }
 
     if config.Debug {
@@ -78,19 +89,28 @@ func main() {
     }
 
     c, _ := client.NewHTTPClient(client.HTTPConfig{
-        Addr: config.Address,
-        Username: config.Username,
-        Password: config.Password,
+        Addr: config.Db.Address,
+        Username: config.Db.Username,
+        Password: config.Db.Password,
     })
 
     // Create a new point batch
     bp_config := client.BatchPointsConfig{
-        Database:  config.Database,
-        Precision: config.Precision,
+        Database:  config.Db.Database,
+        Precision: config.Db.Precision,
     }
 
     scanner := bufio.NewScanner(bufio.NewReader(os.Stdin))
     scanner.Split(sqlSplitFunc)
+
+    scanner.Scan(); scanner.Scan()
+    in_range, err := check_binlog_time(scanner.Text(), config)
+    if err != nil {
+        log.Fatal("Error checking binlog time: ", err)
+    }
+    if ! in_range {
+        return
+    }
 
     insert_cnt := 0
     for bp_cnt := 1; bp_cnt > 0; {
@@ -116,7 +136,6 @@ func main() {
             log.Debugf("%+v\n", bp.Points()[0])
         }
     }
-
 }
 
 
@@ -209,4 +228,36 @@ func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error
     }
 
     return nil
+}
+
+func check_binlog_time(head string, config ConfigType) (bool, error) {
+    regex := regexp.MustCompile("#(.*?) server")
+    match := regex.FindStringSubmatch(head)[1]
+    t, err := time.Parse("060102 15:04:05", match)
+    if err != nil {
+        log.Warnf("Unable to parse binlog time. Will import it. Matched %s. Head of file \n%s\n",
+            match, head)
+        return true, nil
+    }
+    t_min, err_min := time.Parse(time.RFC3339, config.Binlog.MinTime)
+    if err_min == nil {
+        log.Debugf("min_binlog_time %v", t_min)
+        if t.Before(t_min) {
+            log.Info("binlog date before min_binlog_time.")
+            return false, nil
+        }
+    } else if config.Binlog.MinTime != "" {
+        return false, err_min
+    }
+    t_max, err_max := time.Parse(time.RFC3339, config.Binlog.MaxTime)
+    if err_max == nil {
+        log.Debugf("max_binlog_time %v", t_max)
+        if ! t.Before(t_max) {
+            log.Info("binlog date >= max_binlog_time.")
+            return false, nil
+        }
+    } else if config.Binlog.MaxTime != "" {
+        return false, err_max
+    }
+    return true, nil
 }

@@ -118,7 +118,7 @@ func main() {
         for bp_cnt = 0; scanner.Scan() && bp_cnt < 100000; {
             if bytes.Compare(scanner.Bytes()[0:len(INSERT_HEAD)], INSERT_HEAD) == 0 {
                 sqlInsert := string(scanner.Bytes())
-                err := analyzeInsert(sqlInsert, config.Extract, bp)
+                err := analyzeInsert(sqlInsert, &config.Extract, &bp)
                 if err != nil {
                     log.Warnf("analyzeInsert failed for line \n%s\n%s\n", sqlInsert, err)
                 } else {
@@ -139,7 +139,8 @@ func main() {
 }
 
 
-func analyzeInsert(sql string, extract ExtractType, bp client.BatchPoints) error {
+func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoints) error {
+    extract, bp := *extractPtr, *bpPtr
     // parse SQL string
     t, err := sqlparser.Parse(sql)
 

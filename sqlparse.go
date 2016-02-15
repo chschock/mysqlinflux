@@ -5,7 +5,6 @@ import (
     "strconv"
     "errors"
     "reflect"
-    "strings"
     "bytes"
     "regexp"
     "bufio"
@@ -22,13 +21,19 @@ var LINE_SEP = []byte("/*!*/;\n")
 var INSERT_HEAD = []byte("INSERT")
 
 const (
-    gen_profile_data = false
+    GEN_PROFILE_DATA = false
+    BATCH_SZ = 100000
 )
 
 type ExtractType map[string]struct{
     Tags map[string]string
     Fields map[string]string
-    Time string
+    Time TimeType
+}
+
+type TimeType struct{
+    Field string
+    Format string
 }
 
 type DbType struct{
@@ -70,7 +75,7 @@ func sqlSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error
 
 func main() {
     // Profiling
-    if gen_profile_data {
+    if GEN_PROFILE_DATA {
         defer profile.Start(profile.CPUProfile).Stop()
     }
     startTime := time.Now()
@@ -105,9 +110,9 @@ func main() {
 
     // Batch processing loop
     insert_tot, point_tot := 0, 0
-    for bp_cnt := 1; bp_cnt > 0; {
+    for stop := false; ! stop;  {
         bp, _ := client.NewBatchPoints(bp_config)
-        for bp_cnt = 0; scanner.Scan() && bp_cnt < 100000; {
+        for stop = true; scanner.Scan() && len(bp.Points()) < BATCH_SZ; stop = false {
             line, ih := scanner.Bytes(), INSERT_HEAD
             if len(line) > len(ih) && bytes.Compare(line[0:len(ih)], ih) == 0 {
                 inserted, err := analyzeInsert(string(line), &config.Extract, &bp)
@@ -118,9 +123,8 @@ func main() {
                 }
             }
         }
-        bp_cnt := len(bp.Points())
-        if bp_cnt > 0 {
-            point_tot += bp_cnt
+        if len(bp.Points()) > 0 {
+            point_tot += len(bp.Points())
             err := c.Write(bp)
             if err != nil {
                 log.Fatalln(err)
@@ -178,12 +182,16 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
 
             for i, v := range row {
 
-                if cols[i] == extract[table].Time {
+                if cols[i] == extract[table].Time.Field {
                     log.Debug("time")
                     ve, ok := v.(sqlparser.StrVal)
                     if ok {
-                        timestamp, _ = time.Parse( // place T as date time seperator and add UTC Z
-                            time.RFC3339, strings.Replace(string(ve)+"Z", " ", "T", 1))
+                        ts, err := time.Parse(extract[table].Time.Format, string(ve))
+                        if err != nil {
+                            log.Warn("Timestamp parsing failed: ", err)
+                        } else {
+                            timestamp = ts
+                        }
                     } else {
                         log.Info("Time column is no StrVal")
                     }

@@ -69,11 +69,13 @@ func sqlSplitFunc(data []byte, atEOF bool) (advance int, token []byte, err error
 }
 
 func main() {
+    // Profiling
     if gen_profile_data {
         defer profile.Start(profile.CPUProfile).Stop()
     }
     startTime := time.Now()
 
+    // Init
     config := getConfig()
 
     c, _ := client.NewHTTPClient(client.HTTPConfig{
@@ -88,6 +90,7 @@ func main() {
         Precision: config.Db.Precision,
     }
 
+    // Initialize scanner and read file header
     scanner := bufio.NewScanner(bufio.NewReader(os.Stdin))
     scanner.Split(sqlSplitFunc)
 
@@ -100,22 +103,24 @@ func main() {
         return
     }
 
-    insert_cnt := 0
+    // Batch processing loop
+    insert_tot, point_tot := 0, 0
     for bp_cnt := 1; bp_cnt > 0; {
         bp, _ := client.NewBatchPoints(bp_config)
         for bp_cnt = 0; scanner.Scan() && bp_cnt < 100000; {
             line, ih := scanner.Bytes(), INSERT_HEAD
             if len(line) > len(ih) && bytes.Compare(line[0:len(ih)], ih) == 0 {
-                err := analyzeInsert(string(line), &config.Extract, &bp)
+                inserted, err := analyzeInsert(string(line), &config.Extract, &bp)
                 if err != nil {
                     log.Warnf("analyzeInsert failed for line \n%s\n%s\n", string(line), err)
-                } else {
-                    insert_cnt ++
-                    bp_cnt += len(bp.Points())
+                } else if inserted {
+                    insert_tot ++
                 }
             }
         }
+        bp_cnt := len(bp.Points())
         if bp_cnt > 0 {
+            point_tot += bp_cnt
             err := c.Write(bp)
             if err != nil {
                 log.Fatalln(err)
@@ -124,11 +129,12 @@ func main() {
             log.Debugf("%+v\n", bp.Points()[0])
         }
     }
-    log.Infof("Processing time: %s\n", time.Since(startTime))
+
+    log.Infof("%d INSERT statements, %d points\nProcessing time: %s\n",
+        insert_tot, point_tot, time.Since(startTime))
 }
 
-
-func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoints) error {
+func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoints) (bool, error) {
     extract, bp := *extractPtr, *bpPtr
     // parse SQL string
     t, err := sqlparser.Parse(sql)
@@ -136,7 +142,7 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
     log.Debugf("%#v\n", t)
 
     if err != nil {
-        return err
+        return false, err
     }
 
     // interpret parse tree
@@ -146,7 +152,7 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
     case *sqlparser.Insert:
         table := string(t.Table.Name)
         if _, ok := extract[table]; ! ok {
-            return nil
+            return false, nil
         }
 
         cols := make([]string, len(t.Columns))
@@ -157,7 +163,7 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
 
         rows, ok := t.Rows.(sqlparser.Values)
         if ! ok {
-            return errors.New("Rows are no Values")
+            return false, errors.New("Rows are no Values")
         }
 
         tags := make(map[string]string)
@@ -167,7 +173,7 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
         for _, r := range rows {
             row, ok := r.(sqlparser.ValTuple)
             if ! ok {
-                return errors.New("Row is no ValTuple")
+                return false, errors.New("Row is no ValTuple")
             }
 
             for i, v := range row {
@@ -210,14 +216,14 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
             if ! timestamp.IsZero() && len(fields) > 0 {
                 p, err := client.NewPoint(table, tags, fields, timestamp)
                 if err != nil {
-                    return err
+                    return false, err
                 }
                 bp.AddPoint(p)
             }
         }
     }
 
-    return nil
+    return true, nil
 }
 
 func checkBinlogTime(head string, config ConfigType) (bool, error) {

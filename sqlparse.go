@@ -249,6 +249,7 @@ func checkBinlogTime(head string, config ConfigType) (bool, error) {
     } else if config.Binlog.MaxTime != "" {
         return false, err_max
     }
+    log.Infof("Binlog time: %s\n", t)
     return true, nil
 }
 

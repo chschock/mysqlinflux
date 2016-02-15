@@ -195,7 +195,8 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
                     } else {
                         log.Info("Time column is no StrVal")
                     }
-                } else if _, present := extract[table].Tags[cols[i]]; present {
+                }
+                if _, present := extract[table].Tags[cols[i]]; present {
                     ve, ok := v.(sqlparser.StrVal)
                     log.Debugf("tags: %s, %t\n", ve, ok)
                     if ok {
@@ -203,7 +204,8 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
                     } else {
                         log.Info("Tag column is no StrVal")
                     }
-                } else if _, present := extract[table].Fields[cols[i]]; present {
+                }
+                if _, present := extract[table].Fields[cols[i]]; present {
                     switch v := v.(type) {
                     case sqlparser.NumVal:
                         log.Debugf("field: %s, %t\n", v, ok)

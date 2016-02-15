@@ -72,21 +72,9 @@ func main() {
     if gen_profile_data {
         defer profile.Start(profile.CPUProfile).Stop()
     }
+    startTime := time.Now()
 
-    dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
-    file, _ := os.Open(filepath.Join(dir, "conf.json"))
-    decoder := json.NewDecoder(file)
-    config := ConfigType{}
-
-    if err := decoder.Decode(&config); err != nil {
-      log.Fatalln("error decoding config: ", err)
-    } else {
-        log.Debugf("Config: %#v\n", config)
-    }
-
-    if config.Debug {
-        log.SetLevel(log.DebugLevel)
-    }
+    config := getConfig()
 
     c, _ := client.NewHTTPClient(client.HTTPConfig{
         Addr: config.Db.Address,
@@ -104,7 +92,7 @@ func main() {
     scanner.Split(sqlSplitFunc)
 
     scanner.Scan(); scanner.Scan()
-    in_range, err := check_binlog_time(scanner.Text(), config)
+    in_range, err := checkBinlogTime(scanner.Text(), config)
     if err != nil {
         log.Fatal("Error checking binlog time: ", err)
     }
@@ -116,11 +104,11 @@ func main() {
     for bp_cnt := 1; bp_cnt > 0; {
         bp, _ := client.NewBatchPoints(bp_config)
         for bp_cnt = 0; scanner.Scan() && bp_cnt < 100000; {
-            if bytes.Compare(scanner.Bytes()[0:len(INSERT_HEAD)], INSERT_HEAD) == 0 {
-                sqlInsert := string(scanner.Bytes())
-                err := analyzeInsert(sqlInsert, &config.Extract, &bp)
+            line, ih := scanner.Bytes(), INSERT_HEAD
+            if len(line) > len(ih) && bytes.Compare(line[0:len(ih)], ih) == 0 {
+                err := analyzeInsert(string(line), &config.Extract, &bp)
                 if err != nil {
-                    log.Warnf("analyzeInsert failed for line \n%s\n%s\n", sqlInsert, err)
+                    log.Warnf("analyzeInsert failed for line \n%s\n%s\n", string(line), err)
                 } else {
                     insert_cnt ++
                     bp_cnt += len(bp.Points())
@@ -136,6 +124,7 @@ func main() {
             log.Debugf("%+v\n", bp.Points()[0])
         }
     }
+    log.Infof("Processing time: %s\n", time.Since(startTime))
 }
 
 
@@ -231,7 +220,7 @@ func analyzeInsert(sql string, extractPtr *ExtractType, bpPtr *client.BatchPoint
     return nil
 }
 
-func check_binlog_time(head string, config ConfigType) (bool, error) {
+func checkBinlogTime(head string, config ConfigType) (bool, error) {
     regex := regexp.MustCompile("#(.*?) server")
     match := regex.FindStringSubmatch(head)[1]
     t, err := time.Parse("060102 15:04:05", match)
@@ -244,7 +233,7 @@ func check_binlog_time(head string, config ConfigType) (bool, error) {
     if err_min == nil {
         log.Debugf("min_binlog_time %v", t_min)
         if t.Before(t_min) {
-            log.Info("binlog date before min_binlog_time.")
+            log.Info("binlog date < min_binlog_time.")
             return false, nil
         }
     } else if config.Binlog.MinTime != "" {
@@ -261,4 +250,22 @@ func check_binlog_time(head string, config ConfigType) (bool, error) {
         return false, err_max
     }
     return true, nil
+}
+
+func getConfig() ConfigType{
+    dir, _ := filepath.Abs(filepath.Dir(os.Args[0]))
+    file, _ := os.Open(filepath.Join(dir, "conf.json"))
+    decoder := json.NewDecoder(file)
+    config := ConfigType{}
+
+    if err := decoder.Decode(&config); err != nil {
+      log.Fatalln("error decoding config: ", err)
+    } else {
+        log.Debugf("Config: %#v\n", config)
+    }
+
+    if config.Debug {
+        log.SetLevel(log.DebugLevel)
+    }
+    return config
 }
